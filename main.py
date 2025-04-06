@@ -1,4 +1,14 @@
-from emotion_analysis import inference
-prompt = "idk why i started yapping then my bf got really mad at me and wanted to break up with me. what do I even do now. I'm such a mess, gonna go get some wine and then drunk call all my friends"
-predictions = inference.predict(prompt)
-print(predictions)
+from emotion_analysis import inference,data_preprocessing
+
+prompt = "i am walking down a road and i see a rainbow and it is sunny. i love life. then suddenly it turns dark and cloudy. it starts raining and i start crying."
+# predictions = inference.predict_all_labels(prompt)
+# print(predictions)
+segmentation = data_preprocessing.segment_text(prompt)
+n = len(segmentation)
+allpredictions = []
+for i in range(0,n):
+    predictions = inference.predict_labels_above_threshold(segmentation[i])
+    allpredictions.append(predictions)
+
+print(allpredictions)
+
