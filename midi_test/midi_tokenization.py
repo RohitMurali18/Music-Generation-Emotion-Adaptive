@@ -13,7 +13,7 @@ def midi_tokenize(midi_file):
             tokens.append(f"[NOTE] [PITCH:{note['name']}] [START:{note['start']}] [END:{note['end']}] [DURATION:{note['duration']}]")
 
     tokens.append("[END_SEQUENCE]")
+    print(f"[BPM] {midi_data['BPM']}")
+    # return tokens
 
-    return tokens
-
-print(midi_tokenize('80df1867935371808ab60eabdad2a1d2.mid'))
+print(midi_tokenize('/Users/dhruvagarwal/Music-Generation-Emotion-Adaptive/tokenization/lmd_full/0/00000ec8a66b6bd2ef809b0443eeae41.mid'))
