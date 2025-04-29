@@ -39,11 +39,12 @@ class MidiTokenDS(Dataset):
     def __len__(self): return len(self.data)
 
     def __getitem__(self, idx):
-        seq = self.data[idx]
-        pad = [PAD_ID]*(SEQ_LEN-len(seq))
-        x   = torch.tensor(seq+pad[:-1])      # input
-        y   = torch.tensor(seq[1:]+pad)       # next-token target
-        return x, y
+        seq  = self.data[idx]
+        pad  = [PAD_ID] * (SEQ_LEN - len(seq))
+        full = seq + pad                       # len = SEQ_LEN
+        return (torch.tensor(full[:-1]),       # x  len = SEQ_LEN-1
+                torch.tensor(full[1:]))        # y  len = SEQ_LEN-1
+
 
 dataset = MidiTokenDS(df["tokens"].tolist())
 loader  = DataLoader(dataset, batch_size=BATCH, shuffle=True)
