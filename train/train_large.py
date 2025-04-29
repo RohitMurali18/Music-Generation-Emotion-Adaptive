@@ -6,7 +6,7 @@ train_cpu_5h.py  –  single-m510 run that ends ~5 h later
 """
 
 # ───────────── tweak here only ────────────────────────
-CSV_GLOB   = "lmd_full/**/*.csv"    # adjust if your files live elsewhere
+CSV_GLOB   = "lmd_mini.csv"    # adjust if your files live elsewhere
 MAX_ROWS   = 1_000_000              # hard cap: rows streamed then stop
 SEQ_LEN    = 512
 BATCH_PHYS = 4                      # per process
