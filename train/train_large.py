@@ -1,129 +1,133 @@
 """
-train_large.py  –  full-scale causal LM for Lakh MIDI Dataset tokens
-────────────────────────────────────────────────────────────────────
-• Dataset: one or many CSVs with a “tokens” JSON column
-• Model  : GPT-style Transformer (configurable depth / width)
-• Scales automatically across GPUs / BF16 / FP16 via 🤗 Accelerate
+train_cpu_5h.py  –  single-m510 run that ends ~5 h later
+─────────────────────────────────────────────────────────
+• Reads at most 1 000 000 rows across all CSVs (streaming, so low RAM)
+• 6-layer × 512-d causal Transformer
 """
 
-from pathlib import Path
-import json, pandas as pd, torch, torch.nn as nn
-from torch.utils.data import IterableDataset
+# ───────────── tweak here only ────────────────────────
+CSV_GLOB   = "lmd_full/**/*.csv"    # adjust if your files live elsewhere
+MAX_ROWS   = 1_000_000              # hard cap: rows streamed then stop
+SEQ_LEN    = 512
+BATCH_PHYS = 4                      # per process
+ACC_STEPS  = 16                     # logical batch 64
+EPOCHS     = 20                     # 20 × ~15 min ≈ 5 h
+LR         = 3e-4
+
+D_MODEL    = 512
+N_HEAD     = 8
+N_LAYER    = 6
+SAVE_EVERY = 10_000                 # save every 10 k updates
+OUT_DIR    = "ckpt_5h"
+# ──────────────────────────────────────────────────────
+
+# ---------- boilerplate (same as previous large script, trimmed) ------------
+import os, json, pandas as pd, torch, torch.nn as nn
+from torch.utils.data import IterableDataset, DataLoader
 from accelerate import Accelerator
+from pathlib import Path
 from tqdm.auto import tqdm
 
-# ───────────────────────────── hyper-parameters ────────────────────────────
-CFG = dict(
-    CSV_GLOB      = "lmd_mini.csv",   # glob with ** for nested dirs
-    SEQ_LEN       = 512,
-    BATCH_PHYS    = 4,        # physical batch / device
-    ACC_STEPS     = 8,        # logical batch = BATCH_PHYS*ACC_STEPS (32 here)
-    EPOCHS        = 5,
-    LR            = 3e-4,
-    D_MODEL       = 768,
-    N_HEAD        = 12,
-    N_LAYER       = 12,
-    SAVE_EVERY    = 5_000,    # steps
-    OUT_DIR       = Path("checkpoints_large"),
-)
-# ───────────────────────────────────────────────────────────────────────────
+# limit math threads so 8 processes don’t oversubscribe
+os.environ["OMP_NUM_THREADS"] = "1"
+torch.set_num_threads(1)
 
-# 1)  build vocabulary only once (streaming over first CSV) -----------------
-def yield_tokens(csv_path):
-    for chunk in pd.read_csv(csv_path, usecols=["tokens"], chunksize=10_000):
-        for js in chunk["tokens"]:
-            try:
-                yield from json.loads(js)
-            except Exception:
-                pass
+csv_files = list(Path().glob(CSV_GLOB))
+assert csv_files, "No CSV files found – check CSV_GLOB"
 
-csv_files = list(Path().glob(CFG["CSV_GLOB"]))
+# 1) build vocab (stream first CSV) ------------------------------------------
 vocab = {"[PAD]"}
-for f in csv_files:
-    vocab.update(yield_tokens(f))
-tok2id = {t:i for i,t in enumerate(sorted(vocab))}
-PAD_ID  = tok2id["[PAD]"]
+rows_seen = 0
+for path in csv_files:
+    for chunk in pd.read_csv(path, usecols=["tokens"], chunksize=50_000):
+        for js in chunk["tokens"]:
+            vocab.update(json.loads(js))
+            rows_seen += 1
+            if rows_seen >= MAX_ROWS:
+                break
+        if rows_seen >= MAX_ROWS:
+            break
+    if rows_seen >= MAX_ROWS:
+        break
 
-print(f"✓ vocab size: {len(tok2id):,}")
+tok2id = {t: i for i, t in enumerate(sorted(vocab))}
+PAD_ID = tok2id["[PAD]"]
+print(f"✓ vocab size {len(tok2id):,} from {rows_seen:,} sampled rows")
 
-# 2)  iterable dataset (stream‐friendly) -------------------------------------
-class CSVTokenDataset(IterableDataset):
-    def __init__(self, files):
-        super().__init__()
-        self.files = files
-    def parse(self, js):
-        try:
-            seq = [tok2id[t] for t in json.loads(js)][:CFG["SEQ_LEN"]]
-            pad = [PAD_ID]*(CFG["SEQ_LEN"]-len(seq))
-            full= seq+pad
-            return torch.tensor(full[:-1]), torch.tensor(full[1:])
-        except Exception:
-            return None
+# 2) streaming dataset -------------------------------------------------------
+class CSVStream(IterableDataset):
     def __iter__(self):
-        for path in self.files:
-            for chunk in pd.read_csv(path, usecols=["tokens"],
-                                      chunksize=10_000):
+        seen = 0
+        for p in csv_files:
+            for chunk in pd.read_csv(p, usecols=["tokens"], chunksize=10_000):
                 for js in chunk["tokens"]:
-                    item = self.parse(js)
-                    if item: yield item
+                    if seen >= MAX_ROWS: return
+                    try:
+                        ids = [tok2id[t] for t in json.loads(js)][:SEQ_LEN]
+                    except Exception:
+                        continue
+                    pad = [PAD_ID]*(SEQ_LEN-len(ids))
+                    full= ids+pad
+                    yield (torch.tensor(full[:-1]),
+                           torch.tensor(full[1:]))
+                    seen += 1
 
-dataset = CSVTokenDataset(csv_files)
+dataset = CSVStream()
 
-# 3)  model ------------------------------------------------------------------
+# 3) model -------------------------------------------------------------------
 class GPT(nn.Module):
     def __init__(self, vocab):
         super().__init__()
-        S, D = CFG["SEQ_LEN"], CFG["D_MODEL"]
-        self.emb  = nn.Embedding(vocab, D)
-        self.pos  = nn.Parameter(torch.zeros(S-1, D))
-        block     = nn.TransformerEncoderLayer(
-                        D, CFG["N_HEAD"], D*4, batch_first=True)
-        self.tr   = nn.TransformerEncoder(block, CFG["N_LAYER"])
-        self.fc   = nn.Linear(D, vocab)
+        self.emb = nn.Embedding(vocab, D_MODEL)
+        self.pos = nn.Parameter(torch.zeros(SEQ_LEN-1, D_MODEL))
+        blk = nn.TransformerEncoderLayer(D_MODEL, N_HEAD, D_MODEL*4,
+                                         batch_first=True)
+        self.tr = nn.TransformerEncoder(blk, N_LAYER)
+        self.fc = nn.Linear(D_MODEL, vocab)
     def forward(self, x):
-        return self.fc(self.tr(self.emb(x)+self.pos[:x.size(1)]))
+        return self.fc(self.tr(self.emb(x) + self.pos[:x.size(1)]))
 
 model = GPT(len(tok2id))
-
-# 4)  training setup with Accelerate ----------------------------------------
-accelerator = Accelerator(gradient_accumulation_steps=CFG["ACC_STEPS"],
-                          mixed_precision="bf16" if torch.cuda.is_available()
-                                          else "no")
-optim  = torch.optim.AdamW(model.parameters(), lr=CFG["LR"])
+optim = torch.optim.AdamW(model.parameters(), lr=LR)
 loss_f = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
-loader = torch.utils.data.DataLoader(dataset,
-            batch_size=CFG["BATCH_PHYS"], num_workers=4, pin_memory=True)
+# 4) accelerator -------------------------------------------------------------
+acc = Accelerator(gradient_accumulation_steps=ACC_STEPS, mixed_precision="no")
+loader = DataLoader(dataset, batch_size=BATCH_PHYS, num_workers=4,
+                    pin_memory=True)
+model, optim, loader = acc.prepare(model, optim, loader)
 
-model, optim, loader = accelerator.prepare(model, optim, loader)
-CFG["OUT_DIR"].mkdir(exist_ok=True)
+Path(OUT_DIR).mkdir(exist_ok=True)
 
-# 5)  train loop -------------------------------------------------------------
-step, epoch = 0, 0
-for epoch in range(CFG["EPOCHS"]):
-    pbar = tqdm(loader, disable=not accelerator.is_main_process,
-                desc=f"epoch {epoch+1}")
+LATEST = None
+# 5) train -------------------------------------------------------------------
+for epoch in range(EPOCHS):
+    pbar = tqdm(loader, disable=not acc.is_main_process,
+                desc=f"ep{epoch+1}/{EPOCHS}")
     for x, y in pbar:
-        with accelerator.accumulate(model):
+        with acc.accumulate(model):
             logits = model(x)
-            loss   = loss_f(logits.view(-1, logits.size(-1)), y.view(-1))
-            accelerator.backward(loss)
+            loss = loss_f(logits.view(-1, logits.size(-1)), y.view(-1))
+            acc.backward(loss)
             optim.step(); optim.zero_grad()
-
         step += 1
-        if accelerator.is_main_process:
+
+        if acc.is_main_process:
             pbar.set_postfix(loss=float(loss))
 
-            if step % CFG["SAVE_EVERY"] == 0:
-                name = CFG["OUT_DIR"]/f"step{step:07d}.pt"
-                torch.save(
-                    {"model": accelerator.get_state_dict(model),
-                     "vocab": tok2id}, name)
-                print("💾 saved", name)
+            # ────── save only the newest ──────
+            if step % SAVE_EVERY == 0:
+                new_ckpt = Path(OUT_DIR) / f"step{step:07d}.pt"
+                torch.save({"model": acc.get_state_dict(model),
+                            "vocab": tok2id}, new_ckpt)
 
-# final save
-if accelerator.is_main_process:
-    torch.save({"model": accelerator.get_state_dict(model),
-                "vocab": tok2id},
-               CFG["OUT_DIR"]/ "final.pt")
-    print("✓ training complete")
+                # delete the previous file (if any)
+                if LATEST and LATEST.exists():
+                    LATEST.unlink(missing_ok=True)
+                LATEST = new_ckpt
+                print("💾  saved step", step)
+# final
+if acc.is_main_process:
+    torch.save({"model": acc.get_state_dict(model), "vocab": tok2id},
+               f"{OUT_DIR}/final.pt")
+    print("✓ done – final checkpoint written")
