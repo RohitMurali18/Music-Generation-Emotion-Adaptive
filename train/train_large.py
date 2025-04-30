@@ -5,14 +5,14 @@ MAX_ROWS   = 5000
 SEQ_LEN    = 256                     # final length of each sequence
 BATCH_PHYS = 8
 ACC_STEPS  = 8                      # logical batch 64
-EPOCHS     = 3
+EPOCHS     = 6
 SAVE_EVERY = 500
 
 D_MODEL    = 256
 N_HEAD     = 8
 N_LAYER    = 4
 LR         = 3e-4
-OUT_DIR    = "ckpt_10k3"
+OUT_DIR    = "ckpt_10k4"
 
 # ─── std-lib / deps ─────────────────────────────────────────────────────────
 import os, re, json, sys, pandas as pd, torch, torch.nn as nn
