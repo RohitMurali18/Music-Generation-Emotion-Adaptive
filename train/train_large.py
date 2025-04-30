@@ -1,7 +1,7 @@
 # train_tick_10k.py  –  10 000-row run ≤64 GB RAM
 # ────────────────────────────────────────────────
 CSV_GLOB   = "lmd_full.csv"
-MAX_ROWS   = 10_000                 # ← only ten-thousand
+MAX_ROWS   = 7500                 # ← only ten-thousand
 TICK_MS    = 10
 
 SEQ_LEN    = 512
@@ -83,19 +83,27 @@ if acc.is_main_process:
 # ───────────────── dataset ───────────────────────────────────
 class CSVStream(IterableDataset):
     def __iter__(self):
-        seen = 0
+        seen, bar = 0, None
+        if torch.utils.data.get_worker_info() is None:        # main-proc
+            bar = tqdm(total=MAX_ROWS, desc="dataset-prep", position=0)
         for p in csv_files:
             for ch in pd.read_csv(p, usecols=["tokens"], chunksize=5_000):
                 for js in ch["tokens"]:
-                    if seen >= MAX_ROWS: return
+                    if seen >= MAX_ROWS:
+                        if bar: bar.close()
+                        return
                     try:
                         ids = [tok2id[t] for t in quantise(js)]
                     except Exception:
                         continue
                     pad = [PAD_ID]*(SEQ_LEN-len(ids))
-                    full= ids+pad
-                    yield (torch.tensor(full[:-1]), torch.tensor(full[1:]))
+                    full = ids + pad
+                    if bar:
+                        bar.update(1)
                     seen += 1
+                    yield (torch.tensor(full[:-1]), torch.tensor(full[1:]))
+        if bar:
+            bar.close()
 
 dataset = CSVStream()
 pin = torch.cuda.is_available()          # avoid warning on CPU
