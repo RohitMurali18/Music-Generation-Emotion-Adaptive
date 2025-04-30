@@ -1,6 +1,6 @@
 # train_tick_cpu.py  –  ≤64 GB RAM  (patched broadcast)
 # ──────────────────────────────────────────────────────
-CSV_GLOB   = "lmd_full/**/*.csv"
+CSV_GLOB   = "lmd_full.csv"
 MAX_ROWS   = 1_000_000
 TICK_MS    = 10
 
