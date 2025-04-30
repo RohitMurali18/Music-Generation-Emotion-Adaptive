@@ -1,148 +1,157 @@
-#!/usr/bin/env python3
-# train_large.py  –  10 000-row CPU demo ≤ 64 GB RAM
-# ═══════════════════════════════════════════════════
-CSV_PATH   = "lmd_full.csv"   # one CSV; adjust or make it a glob
+# train_large.py  –  10 000-row CPU smoke test (≤ 64 GB RAM)
+# ───────────────────────────────────────────────────────────
+CSV_GLOB   = "lmd_full.csv"
 MAX_ROWS   = 10_000
-SEQ_LEN    = 256
-BATCH      = 8
-ACC_STEPS  = 8                # logical batch = 64
+SEQ_LEN    = 256                     # final length of each sequence
+BATCH_PHYS = 4
+ACC_STEPS  = 16                      # logical batch 64
 EPOCHS     = 5
-SAVE_EVERY = 2_000
-TICK_MS    = 10               # 1 tick = 10 ms  →  1 min = 6 000 ticks
+SAVE_EVERY = 5_000
 
-D_MODEL    = 256
-N_HEAD     = 4
-N_LAYER    = 4
+D_MODEL    = 512
+N_HEAD     = 8
+N_LAYER    = 6
 LR         = 3e-4
 OUT_DIR    = "ckpt_10k"
 
-# ────────────────────────────────────────────────
-import os, sys, json, math, pandas as pd, torch, torch.nn as nn, re
-from pathlib import Path
+# ─── std-lib / deps ─────────────────────────────────────────────────────────
+import os, re, json, sys, pandas as pd, torch, torch.nn as nn
 from torch.utils.data import IterableDataset, DataLoader
 from accelerate import Accelerator
+from pathlib import Path
 from tqdm.auto import tqdm
-os.environ["OMP_NUM_THREADS"] = "1";  torch.set_num_threads(1)
-Path(OUT_DIR).mkdir(parents=True, exist_ok=True)
 
-# ---------- helpers ---------------------------------------------------------
-tick = lambda x: str(int(round(float(x)*1000 / TICK_MS)))
+os.environ["OMP_NUM_THREADS"] = "1"
+torch.set_num_threads(1)
+Path(OUT_DIR).mkdir(exist_ok=True)
 
-note_pat_secs  = re.compile(
-    r"\[NOTE\] \s*\[PITCH:(.+?)\]\s*\[START:(.+?)\]\s*\[END:(.+?)\]\s*\[DURATION:(.+?)\]",
-    re.I)
-note_pat_ticks = re.compile(
-    r"\[NOTE\] \s*\[PITCH:(.+?)\]\s*\[START_T:(.+?)\]\s*\[END_T:(.+?)\]\s*\[DUR_T:(.+?)\]",
-    re.I)
+csv_files = list(Path().glob(CSV_GLOB))
+assert csv_files, f"No CSV files matched {CSV_GLOB!r}"
 
-def tokenise_note(tok: str):
-    """
-    Split a NOTE token into atomic tokens that share embeddings.
-    Accepts either the _seconds_ or the _tick_ variant.
-    """
-    m = note_pat_secs.match(tok)
-    if m:                                  # original float-seconds version
-        p, s, e, d = m.groups()
-        return ["[NOTE]", "[PITCH]", p,
-                "[START_T]", tick(s),
-                "[END_T]",   tick(e),
-                "[DUR_T]",   tick(d)]
-
-    m = note_pat_ticks.match(tok)
-    if m:                                  # already quantised, just split
-        p, s, e, d = m.groups()
-        return ["[NOTE]", "[PITCH]", p,
-                "[START_T]", s,
-                "[END_T]",   e,
-                "[DUR_T]",   d]
-
-    # fallback – unknown format, keep whole token
-    return [tok]
+# ─── token helpers ──────────────────────────────────────────────────────────
+note_pat_secs = re.compile(
+    r"\[NOTE\] \[PITCH:(.+?)\] "
+    r"\[START:(.+?)\] \[END:(.+?)\] \[DURATION:(.+?)\]"
+)
+TICK_MS = 10
+to_tick = lambda s: int(round(float(s) * 1000 / TICK_MS))
 
 def explode(js: str):
+    """seconds → ticks, split NOTE line into atomic subtokens"""
     out = []
-    for t in json.loads(js):
-        if t.startswith("[NOTE]"):
-            out.extend(tokenise_note(t))
-        else:
-            out.append(t)
-        if len(out) >= SEQ_LEN:
-            break
-    return out
+    for tok in json.loads(js):
+        m = note_pat_secs.match(tok)
+        if not m:
+            out.append(tok)
+            continue
+        p, s, e, d = m.groups()
+        out.extend((
+            "[NOTE]", "[PITCH]", p,
+            "[START_T]", str(to_tick(s)),
+            "[END_T]",   str(to_tick(e)),
+            "[DUR_T]",   str(to_tick(d)),
+        ))
+    # *** clamp length here ***
+    return out[:SEQ_LEN]
 
-# ---------- accelerator -----------------------------------------------------
+# ─── Accelerator init -------------------------------------------------------
 acc = Accelerator(gradient_accumulation_steps=ACC_STEPS)
 
-# ---------- vocab build (rank-0 only) ---------------------------------------
+# ─── vocab build (rank-0 only) ---------------------------------------------
 if acc.is_main_process:
-    vocab, nrows = {"[PAD]"}, 0
-    for chunk in pd.read_csv(CSV_PATH, usecols=["tokens"],
-                             chunksize=500, dtype={"tokens":"string"}):
-        for js in chunk["tokens"]:
-            vocab.update(explode(js));  nrows += 1
-            if nrows % 1_000 == 0 or nrows == MAX_ROWS:
-                print(f"[vocab] {nrows:,}/{MAX_ROWS:,}", flush=True)
-            if nrows >= MAX_ROWS:  break
-        if nrows >= MAX_ROWS:      break
-    tok2id = {t:i for i,t in enumerate(sorted(vocab))}
+    vocab, rows = {"[PAD]"}, 0
+    for p in csv_files:
+        for chunk in pd.read_csv(p, usecols=["tokens"], chunksize=2_000):
+            for js in chunk["tokens"]:
+                vocab.update(explode(js))
+                rows += 1
+                if rows % 1_000 == 0:
+                    print(f"[vocab] {rows:,}/{MAX_ROWS:,}", file=sys.stderr,
+                          flush=True)
+                if rows >= MAX_ROWS:
+                    break
+            if rows >= MAX_ROWS:
+                break
+        if rows >= MAX_ROWS:
+            break
+    tok2id = {t: i for i, t in enumerate(sorted(vocab))}
 else:
-    tok2id = None
+    tok2id = None                                    # placeholder
 
-# broadcast to all ranks (if >1)
+# ─── broadcast small Python object (if >1 rank) -----------------------------
 if acc.num_processes > 1:
     import torch.distributed as dist
-    obj = [tok2id];  dist.broadcast_object_list(obj, 0);  tok2id = obj[0]
+    obj = [tok2id]
+    dist.broadcast_object_list(obj, src=0)
+    tok2id = obj[0]
 
-PAD_ID,  V = tok2id["[PAD]"], len(tok2id)
+PAD_ID = tok2id["[PAD]"]
+VOCAB  = len(tok2id)
 if acc.is_main_process:
-    print(f"✓ vocab ready – {V:,} tokens\n", flush=True)
+    print(f"✓ vocab ready – {VOCAB:,} tokens\n", flush=True)
 
-# ---------- streaming dataset ----------------------------------------------
-class Stream(IterableDataset):
+# ─── dataset / loader -------------------------------------------------------
+class CSVStream(IterableDataset):
     def __iter__(self):
         seen = 0
-        for chunk in pd.read_csv(CSV_PATH, usecols=["tokens"],
-                                 chunksize=1000, dtype={"tokens":"string"}):
-            for js in chunk["tokens"]:
-                if seen >= MAX_ROWS:  return
-                ids  = [tok2id[t] for t in explode(js)]
-                full = ids + [PAD_ID]*(SEQ_LEN - len(ids))
-                seen += 1
-                if seen % 1_000 == 0:
-                    print(f"[loader] {seen:,}/{MAX_ROWS:,}", flush=True)
-                yield (torch.tensor(full[:-1]),
-                       torch.tensor(full[1:]))
+        bar = tqdm(total=MAX_ROWS, desc="dataset-prep", position=0) \
+              if acc.is_main_process else None
+        for p in csv_files:
+            for chunk in pd.read_csv(p, usecols=["tokens"], chunksize=5_000):
+                for js in chunk["tokens"]:
+                    if seen >= MAX_ROWS:
+                        if bar: bar.close()
+                        return
+                    ids = [tok2id[t] for t in explode(js)]
+                    if len(ids) < SEQ_LEN:                      # pad up
+                        ids.extend([PAD_ID] * (SEQ_LEN - len(ids)))
+                    else:                                      # clamp down
+                        ids = ids[:SEQ_LEN]
+                    full = ids                                  # exact 256
+                    seen += 1
+                    if bar: bar.update(1)
+                    yield (torch.tensor(full[:-1]),
+                           torch.tensor(full[1:]))
+        if bar:
+            bar.close()
 
-loader = DataLoader(Stream(), BATCH, num_workers=0, pin_memory=False)
+dataset = CSVStream()
+loader  = DataLoader(dataset,
+                     batch_size=BATCH_PHYS,
+                     num_workers=0,       # keep 0 → easiest debug
+                     pin_memory=False)
 
-# ---------- tiny GPT --------------------------------------------------------
+# ─── model ------------------------------------------------------------------
 class GPT(nn.Module):
-    def __init__(self):
+    def __init__(self, V):
         super().__init__()
         self.emb = nn.Embedding(V, D_MODEL)
-        self.pos = nn.Parameter(torch.zeros(SEQ_LEN-1, D_MODEL))
-        layer    = nn.TransformerEncoderLayer(
-                     D_MODEL, N_HEAD, D_MODEL*4, batch_first=True)
-        self.tr  = nn.TransformerEncoder(layer, N_LAYER)
-        self.fc  = nn.Linear(D_MODEL, V)
+        self.pos = nn.Parameter(torch.zeros(SEQ_LEN - 1, D_MODEL))
+        blk = nn.TransformerEncoderLayer(D_MODEL, N_HEAD, D_MODEL * 4,
+                                         batch_first=True)
+        self.tr = nn.TransformerEncoder(blk, N_LAYER)
+        self.fc = nn.Linear(D_MODEL, V)
 
     def forward(self, x):
-        x = self.emb(x) + self.pos[:x.size(1)]
-        return self.fc(self.tr(x))
+        return self.fc(self.tr(self.emb(x) + self.pos[:x.size(1)]))
 
-model, opt = GPT(), torch.optim.AdamW(GPT().parameters(), lr=LR)
-loss_f     = nn.CrossEntropyLoss(ignore_index=PAD_ID)
-model, opt, loader = acc.prepare(model, opt, loader)
+model  = GPT(VOCAB)
+optim  = torch.optim.AdamW(model.parameters(), lr=LR)
+loss_f = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
-# ---------- train -----------------------------------------------------------
+model, optim, loader = acc.prepare(model, optim, loader)
+
+# ─── training ---------------------------------------------------------------
 step = 0
 for ep in range(EPOCHS):
     pbar = tqdm(loader, disable=not acc.is_main_process,
                 desc=f"ep{ep+1}/{EPOCHS}")
-    for x,y in pbar:
+    for x, y in pbar:
         with acc.accumulate(model):
-            loss = loss_f(model(x).view(-1, V), y.view(-1))
-            acc.backward(loss);  opt.step();  opt.zero_grad()
+            logits = model(x)
+            loss   = loss_f(logits.view(-1, VOCAB), y.view(-1))
+            acc.backward(loss)
+            optim.step(); optim.zero_grad()
         step += 1
         if acc.is_main_process:
             pbar.set_postfix(loss=float(loss))
@@ -150,8 +159,6 @@ for ep in range(EPOCHS):
                 torch.save({"model": acc.get_state_dict(model),
                             "vocab": tok2id},
                            f"{OUT_DIR}/latest.pt")
-                print("💾  latest.pt saved (step", step, ")", flush=True)
-
 if acc.is_main_process:
     torch.save({"model": acc.get_state_dict(model), "vocab": tok2id},
                f"{OUT_DIR}/latest.pt")
