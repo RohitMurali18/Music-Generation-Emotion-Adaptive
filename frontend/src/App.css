@@ -1,0 +1,83 @@
+body {
+  background-color: #0d0d0d;
+  color: #f0f0f0;
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, sans-serif;
+}
+
+.app-container {
+  min-height: 100vh;
+  padding: 40px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.app-title {
+  font-size: 24px;
+  font-weight: 600;
+  text-align: center;
+  margin-bottom: 10px;
+}
+
+.app-subtitle {
+  color: #bbb;
+  text-align: center;
+  max-width: 300px;
+  font-size: 14px;
+  margin-bottom: 20px;
+}
+
+.app-textarea {
+  width: 100%;
+  max-width: 500px;
+  height: 100px;
+  border-radius: 12px;
+  background-color: #1a1a1a;
+  color: #f0f0f0;
+  border: 1px solid #333;
+  padding: 12px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  resize: none;
+}
+
+.app-button {
+  padding: 12px 24px;
+  border-radius: 20px;
+  background-color: #222;
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.app-button:disabled {
+  background-color: #1e1e1e;
+  cursor: not-allowed;
+}
+
+.app-audio-container {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.app-audio {
+  width: 100%;
+  max-width: 500px;
+}
+
+.app-download-link {
+  margin-top: 10px;
+}
+
+.app-download-link a {
+  color: #4da6ff;
+  align-items: center;
+  text-decoration: underline;
+  font-size: 14px;
+}
