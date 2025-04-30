@@ -1,22 +1,23 @@
-# train_tick_cpu.py  –  ≤64 GB RAM  (patched broadcast)
-# ──────────────────────────────────────────────────────
+# train_tick_10k.py  –  10 000-row run ≤64 GB RAM
+# ────────────────────────────────────────────────
 CSV_GLOB   = "lmd_full.csv"
-MAX_ROWS   = 1_000_000
+MAX_ROWS   = 10_000                 # ← only ten-thousand
 TICK_MS    = 10
 
 SEQ_LEN    = 512
 BATCH_PHYS = 4
 ACC_STEPS  = 16
-EPOCHS     = 20
-SAVE_EVERY = 10_000
+EPOCHS     = 5                      # quick smoke-test
+SAVE_EVERY = 5_000
 
 D_MODEL    = 512
 N_HEAD     = 8
 N_LAYER    = 6
 LR         = 3e-4
-OUT_DIR    = "ckpt_5h"
+OUT_DIR    = "ckpt_10k"
 
-import os, re, json, pandas as pd, torch, torch.nn as nn
+# ── std libs ────────────────────────────────────
+import os, re, json, pandas as pd, torch, torch.nn as nn, sys
 from torch.utils.data import IterableDataset, DataLoader
 from accelerate import Accelerator
 from pathlib import Path
@@ -33,36 +34,41 @@ note_re = re.compile(
     r"\[NOTE\] \[PITCH:(.+?)\] "
     r"\[START:(.+?)\] \[END:(.+?)\] \[DURATION:(.+?)\]"
 )
-def to_tick(sec): return int(round(sec*1000/TICK_MS))
-def quantise(js):
+to_tick = lambda s: int(round(float(s)*1000/TICK_MS))
+
+def quantise(js: str):
     toks, out = json.loads(js), []
     for t in toks:
         m = note_re.match(t)
         if m:
-            p, s, e, d = m.groups()
-            out.append(f"[NOTE] [PITCH:{p}] [START_T:{to_tick(float(s))}] "
-                       f"[END_T:{to_tick(float(e))}] [DUR_T:{to_tick(float(d))}]")
+            p,s,e,d = m.groups()
+            out.append(f"[NOTE] [PITCH:{p}] [START_T:{to_tick(s)}] "
+                       f"[END_T:{to_tick(e)}] [DUR_T:{to_tick(d)}]")
         else:
             out.append(t)
     return out[:SEQ_LEN]
 
 acc = Accelerator(gradient_accumulation_steps=ACC_STEPS)
 
-# ── vocab (only rank-0 reads files) ───────────────────
+# ───────────────── vocab build (rank-0 only) ─────────────────
 if acc.is_main_process:
     vocab, rows = {"[PAD]"}, 0
     for p in csv_files:
-        for ch in pd.read_csv(p, usecols=["tokens"], chunksize=50_000):
-            for js in ch["tokens"]:
-                vocab.update(quantise(js)); rows += 1
+        for chunk in pd.read_csv(p, usecols=["tokens"], chunksize=2_000):
+            for js in chunk["tokens"]:
+                vocab.update(quantise(js))
+                rows += 1
+                if rows % 1_000 == 0:                      # ⇦ live progress
+                    print(f"[vocab] {rows:,}/{MAX_ROWS:,}", file=sys.stderr,
+                          flush=True)
                 if rows >= MAX_ROWS: break
             if rows >= MAX_ROWS: break
         if rows >= MAX_ROWS: break
     tok2id = {t:i for i,t in enumerate(sorted(vocab))}
 else:
-    tok2id = None
+    tok2id = None                                                 # placeholder
 
-# ── broadcast to the other ranks (patched) ────────────
+# ───────────────── broadcast to other ranks ──────────────────
 if acc.num_processes > 1:
     import torch.distributed as dist
     obj = [tok2id]
@@ -72,27 +78,31 @@ if acc.num_processes > 1:
 PAD_ID     = tok2id["[PAD]"]
 VOCAB_SIZE = len(tok2id)
 if acc.is_main_process:
-    print(f"✓ vocab size {VOCAB_SIZE:,}")
+    print(f"✓ vocab ready – {VOCAB_SIZE:,} tokens\n", flush=True)
 
-# ── streaming dataset ────────────────────────────────
+# ───────────────── dataset ───────────────────────────────────
 class CSVStream(IterableDataset):
     def __iter__(self):
         seen = 0
         for p in csv_files:
-            for ch in pd.read_csv(p, usecols=["tokens"], chunksize=10_000):
+            for ch in pd.read_csv(p, usecols=["tokens"], chunksize=5_000):
                 for js in ch["tokens"]:
                     if seen >= MAX_ROWS: return
                     try:
                         ids = [tok2id[t] for t in quantise(js)]
                     except Exception:
                         continue
-                    pad = [PAD_ID]*(SEQ_LEN-len(ids)); full = ids+pad
+                    pad = [PAD_ID]*(SEQ_LEN-len(ids))
+                    full= ids+pad
                     yield (torch.tensor(full[:-1]), torch.tensor(full[1:]))
                     seen += 1
-dataset = CSVStream()
-loader  = DataLoader(dataset, BATCH_PHYS, num_workers=4, pin_memory=True)
 
-# ── model ─────────────────────────────────────────────
+dataset = CSVStream()
+pin = torch.cuda.is_available()          # avoid warning on CPU
+loader = DataLoader(dataset, BATCH_PHYS,
+                    num_workers=4, pin_memory=pin)
+
+# ───────────────── model ─────────────────────────────────────
 class GPT(nn.Module):
     def __init__(s, V):
         super().__init__()
@@ -110,7 +120,7 @@ loss_f = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
 model, optim, loader = acc.prepare(model, optim, loader)
 
-# ── training loop ────────────────────────────────────
+# ───────────────── training ─────────────────────────────────
 step = 0
 for ep in range(EPOCHS):
     pbar = tqdm(loader, disable=not acc.is_main_process,
@@ -123,9 +133,9 @@ for ep in range(EPOCHS):
         if acc.is_main_process:
             pbar.set_postfix(loss=float(loss))
             if step % SAVE_EVERY == 0:
-                torch.save({"model":acc.get_state_dict(model),"vocab":tok2id},
+                torch.save({"model":acc.get_state_dict(model), "vocab":tok2id},
                            f"{OUT_DIR}/latest.pt")
 if acc.is_main_process:
-    torch.save({"model":acc.get_state_dict(model),"vocab":tok2id},
+    torch.save({"model":acc.get_state_dict(model), "vocab":tok2id},
                f"{OUT_DIR}/latest.pt")
     print("✓ finished – latest.pt written")
