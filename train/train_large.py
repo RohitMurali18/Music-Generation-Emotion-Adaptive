@@ -9,7 +9,7 @@ EPOCHS     = 5
 SAVE_EVERY = 500              # write latest.pt every N updates
 # model
 D_MODEL    = 512;  N_HEAD = 8;  N_LAYER = 6;  LR = 3e-4
-OUT_DIR    = "ckpt_10k"
+OUT_DIR    = "ckpt_10k2"
 
 # ───────── imports / boiler-plate ───────────────────────────────────────────
 import os, re, json, sys, random, pandas as pd, torch, torch.nn as nn
