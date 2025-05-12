@@ -6,7 +6,7 @@ import os, torch, json, pretty_midi
 from pathlib import Path
 import re, random
 
-CKPT = "demo_checkpoint.pt"
+CKPT = "latest.pt"
 ckpt = torch.load(CKPT, map_location="cpu", weights_only=True)
 
 tok2id = ckpt["vocab"]
@@ -77,7 +77,7 @@ prompt = ["[START_SEQUENCE]",
          [f"[INSTRUMENT] {i}" for i in instr]
 
 gen = sample(prompt, max_len=SEQ_LEN_WT)
-print("generated tokens snippet:", gen[:40], "...")
+print("generated tokens snippet:", gen[:500], "...")
 
 # ---------- tokens → MIDI ---------------------------------------------------
 note_re = re.compile(
