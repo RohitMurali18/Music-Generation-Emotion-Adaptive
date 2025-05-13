@@ -1,125 +1,83 @@
-# ── config ────────────────────────────────────────────────────────────────
-CSV_GLOB   = "lmd_full.csv"     # glob or single path
-MAX_ROWS   = 10_000
-hparams    = dict(
-    seq_len = 512,
-    d_model = 512,
-    n_head  = 8,
-    n_layer = 6,
-)
-BATCH_PHYS = 8
-ACC_STEPS  = 8
-EPOCHS     = 6
-LR         = 3e-4
-OUT_DIR    = "ckpt_full"
-SAVE_EVERY = 500
-# ──────────────────────────────────────────────────────────────────────────
+# train_large_autosave.py
+import glob, json, time, pandas as pd, torch, torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
-import os, re, json, sys, pandas as pd, torch, torch.nn as nn
-from torch.utils.data import DataLoader, IterableDataset
-from accelerate import Accelerator
-from pathlib import Path
-from tqdm.auto import tqdm
+CSV_GLOB = "lmd_full.csv"
+MAX_ROWS = 100_000
+SEQ_LEN  = 512
+D_MODEL  = 512
+N_HEAD   = 8
+N_LAYER  = 6
+BATCH    = 16
+EPOCHS   = 6
+LR       = 3e-4
+SAVE_EVERY_HOURS = 2        # how often to checkpoint
+DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
 
-os.environ["OMP_NUM_THREADS"] = "1"
-torch.set_num_threads(1)
-Path(OUT_DIR).mkdir(exist_ok=True)
-csv_files = list(Path().glob(CSV_GLOB))
-assert csv_files, f"no CSV matched {CSV_GLOB}"
+dfs = [pd.read_csv(p, nrows=MAX_ROWS) for p in glob.glob(CSV_GLOB)]
+df  = pd.concat(dfs, ignore_index=True)
+df["tokens"] = df["tokens"].apply(json.loads)
 
-note_pat = re.compile(r"\[NOTE\] \[PITCH:(.+?)\] \[START:(.+?)\] "
-                      r"\[END:(.+?)\] \[DURATION:(.+?)\]")
-TICK_MS = 10
-to_tick = lambda s: int(round(float(s) * 1000 / TICK_MS))
+vocab   = {tok for seq in df["tokens"] for tok in seq}
+tok2id  = {t:i for i,t in enumerate(sorted(vocab))}
+PAD_ID  = len(tok2id)
+tok2id["[PAD]"] = PAD_ID
 
-def explode(js):
-    out = []
-    for tok in json.loads(js):
-        m = note_pat.match(tok)
-        if not m:
-            out.append(tok); continue
-        p, s, e, d = m.groups()
-        out += ["[NOTE]", "[PITCH]", p,
-                "[START_T]", str(to_tick(s)),
-                "[END_T]",   str(to_tick(e)),
-                "[DUR_T]",   str(to_tick(d))]
-    return out[:hparams["seq_len"]]
+def encode(seq): return [tok2id[t] for t in seq][:SEQ_LEN]
 
-acc = Accelerator(gradient_accumulation_steps=ACC_STEPS)
+class MidiDS(Dataset):
+    def __init__(self, seqs):
+        self.data = [encode(s) for s in seqs]
+    def __len__(self): return len(self.data)
+    def __getitem__(self, i):
+        seq = self.data[i]
+        seq += [PAD_ID]*(SEQ_LEN-len(seq))
+        return torch.tensor(seq[:-1]), torch.tensor(seq[1:])
 
-# vocab
-if acc.is_main_process:
-    vocab, rows = {"[PAD]"}, 0
-    for p in csv_files:
-        for chunk in pd.read_csv(p, usecols=["tokens"], chunksize=2_000):
-            for js in chunk["tokens"]:
-                vocab.update(explode(js)); rows += 1
-                if rows >= MAX_ROWS: break
-            if rows >= MAX_ROWS: break
-        if rows >= MAX_ROWS: break
-    tok2id = {t: i for i, t in enumerate(sorted(vocab))}
-else:
-    tok2id = None
-if acc.num_processes > 1:
-    import torch.distributed as dist
-    obj = [tok2id]; dist.broadcast_object_list(obj, src=0); tok2id = obj[0]
-
-PAD_ID, VOCAB = tok2id["[PAD]"], len(tok2id)
-if acc.is_main_process: print(f"vocab {VOCAB}")
-
-class CSVStream(IterableDataset):
-    def __iter__(self):
-        seen = 0
-        bar = tqdm(total=MAX_ROWS, disable=not acc.is_main_process)
-        for p in csv_files:
-            for chunk in pd.read_csv(p, usecols=["tokens"], chunksize=5_000):
-                for js in chunk["tokens"]:
-                    if seen >= MAX_ROWS: bar.close(); return
-                    ids = [tok2id[t] for t in explode(js)]
-                    pad = hparams["seq_len"] - len(ids)
-                    ids = ids + [PAD_ID]*pad if pad > 0 else ids[:hparams["seq_len"]]
-                    seen += 1; bar.update(1)
-                    yield (torch.tensor(ids[:-1]), torch.tensor(ids[1:]))
-        bar.close()
+dl = DataLoader(MidiDS(df["tokens"]), batch_size=BATCH,
+                shuffle=True, pin_memory=True, num_workers=0)
 
 class GPT(nn.Module):
-    def __init__(self, V, hp):
+    def __init__(self, V):
         super().__init__()
-        self.emb = nn.Embedding(V, hp["d_model"])
-        self.pos = nn.Parameter(torch.zeros(hp["seq_len"]-1, hp["d_model"]))
-        blk = nn.TransformerEncoderLayer(hp["d_model"], hp["n_head"],
-                                         hp["d_model"]*4, batch_first=True)
-        self.tr = nn.TransformerEncoder(blk, hp["n_layer"])
-        self.fc = nn.Linear(hp["d_model"], V)
+        self.emb = nn.Embedding(V, D_MODEL)
+        self.pos = nn.Parameter(torch.zeros(SEQ_LEN-1, D_MODEL))
+        blk     = nn.TransformerEncoderLayer(D_MODEL, N_HEAD, D_MODEL*4,
+                                             batch_first=True)
+        self.tr = nn.TransformerEncoder(blk, N_LAYER)
+        self.fc = nn.Linear(D_MODEL, V)
     def forward(self, x):
-        return self.fc(self.tr(self.emb(x) + self.pos[:x.size(1)]))
+        x = self.emb(x) + self.pos[:x.size(1)]
+        return self.fc(self.tr(x))
 
-model  = GPT(VOCAB, hparams)
-optim  = torch.optim.AdamW(model.parameters(), lr=LR)
-loss_f = nn.CrossEntropyLoss(ignore_index=PAD_ID)
-loader = DataLoader(CSVStream(), batch_size=BATCH_PHYS, num_workers=0)
+model = GPT(len(tok2id)).to(DEVICE)
+opt   = torch.optim.AdamW(model.parameters(), lr=LR)
+lossf = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
-model, optim, loader = acc.prepare(model, optim, loader)
-
-step = 0
-for ep in range(EPOCHS):
-    pbar = tqdm(loader, disable=not acc.is_main_process,
-                desc=f"ep{ep+1}/{EPOCHS}")
-    for x, y in pbar:
-        with acc.accumulate(model):
-            loss = loss_f(model(x).view(-1, VOCAB), y.view(-1))
-            acc.backward(loss); optim.step(); optim.zero_grad()
-        step += 1
-        if acc.is_main_process:
-            pbar.set_postfix(loss=float(loss))
-            if step % SAVE_EVERY == 0:
-                torch.save({"model": acc.get_state_dict(model),
-                            "vocab": tok2id,
-                            "hparams": hparams},
-                           f"{OUT_DIR}/latest.pt")
-if acc.is_main_process:
-    torch.save({"model": acc.get_state_dict(model),
+def save(name="latest"):
+    torch.save({"model": model.state_dict(),
                 "vocab": tok2id,
-                "hparams": hparams},
-               f"{OUT_DIR}/latest.pt")
-    print("done, saved latest.pt")
+                "hparams": dict(seq_len=SEQ_LEN, d_model=D_MODEL,
+                                n_head=N_HEAD, n_layer=N_LAYER)},
+               f"ckpt_{name}.pt")
+
+last_save = time.time()
+interval  = SAVE_EVERY_HOURS * 3600
+
+for ep in range(1, EPOCHS+1):
+    pbar = tqdm(dl, desc=f"epoch {ep}")
+    for x, y in pbar:
+        x, y = x.to(DEVICE), y.to(DEVICE)
+        opt.zero_grad()
+        loss = lossf(model(x).view(-1, len(tok2id)), y.view(-1))
+        loss.backward()
+        opt.step()
+        pbar.set_postfix(loss=float(loss))
+        if time.time() - last_save >= interval:
+            save(f"ep{ep}_t{int(time.time())}")
+            last_save = time.time()
+    save(f"ep{ep}")
+
+save("final")
+print("✓ training complete")
