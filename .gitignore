@@ -2,4 +2,7 @@ lmd_full.csv
 demo_checkpoint.pt
 generated.mid
 node_modules/
+.DS_Store
+*.sf2
+__pycache__
 latest.pt

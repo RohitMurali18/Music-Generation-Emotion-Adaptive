@@ -2,8 +2,9 @@ import json
 import random
 import pandas as pd
 from typing import Union, List, Tuple, Dict
+import os
 
-LOOKUP_PATH = r"C:\Users\Rohit\OneDrive\Documents\GitHub\Music Generation - Emotion-Adaptive\emotion_analysis\lookup_table.csv" 
+LOOKUP_PATH = os.path.join(os.path.dirname(__file__), "lookup_table.csv")
 _df = pd.read_csv(LOOKUP_PATH)
 
 EATS = {

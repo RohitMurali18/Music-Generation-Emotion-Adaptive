@@ -81,3 +81,125 @@ body {
   text-decoration: underline;
   font-size: 14px;
 }
+
+.audio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.audio-button {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  background-color: #333;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.audio-button:hover {
+  background-color: #555;
+}
+
+.audio-timeline {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 500px;
+  gap: 0.5rem;
+}
+
+.audio-time {
+  font-size: 0.9rem;
+  color: #ccc;
+  min-width: 40px;
+  text-align: center;
+}
+
+.audio-slider {
+  flex: 1;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: #888;
+  outline: none;
+}
+
+.audio-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+}
+
+.audio-player {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.play-button,
+.download-button {
+  background-color: #1e1e1e;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.play-button:hover,
+.download-button:hover {
+  background-color: #333;
+}
+
+.download-button a {
+  color: white;
+  text-decoration: none;
+}
+
+.timeline {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 200px;
+  gap: 0.5rem;
+}
+
+.time {
+  font-size: 0.9rem;
+  color: #bbb;
+  min-width: 40px;
+  text-align: center;
+}
+
+.slider {
+  flex: 1;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: #aaa;
+  outline: none;
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 50%;
+  cursor: pointer;
+}
