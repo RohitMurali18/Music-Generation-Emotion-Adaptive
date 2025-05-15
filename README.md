@@ -24,12 +24,12 @@ This project consists of a frontend and a backend for generating music based on 
 
 - This project uses `fluidsynth` to convert MIDI files to audio. Install it using:
 
-### macOS
+#### macOS
 ```bash
 brew install fluid-synth
 ```
 
-### Windows
+#### Windows
 ```bash
 Download from: https://github.com/FluidSynth/fluidsynth/releases
 Extract and add the folder with fluidsynth.exe to your system PATH
