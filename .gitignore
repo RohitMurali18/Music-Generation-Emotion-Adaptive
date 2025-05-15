@@ -6,3 +6,4 @@ node_modules/
 *.sf2
 __pycache__
 latest.pt
+generate_music/music_generator.pt
