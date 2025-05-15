@@ -22,7 +22,7 @@ This project consists of a frontend and a backend for generating music based on 
 
 2. Install FluidSynth
 
-This project uses `fluidsynth` to convert MIDI files to audio. Install it using:
+- This project uses `fluidsynth` to convert MIDI files to audio. Install it using:
 
 ### macOS
 ```bash
