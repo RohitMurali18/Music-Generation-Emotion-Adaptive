@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from midi2audio import FluidSynth
 import tempfile
 from io import BytesIO
+import torch.nn as nn
 
 sys.modules['fluidsynth'] = types.ModuleType('fluidsynth')
 
@@ -23,15 +24,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Model loading (as before) ===
 CKPT = Path("generate_music/demo_checkpoint.pt")
+# CKPT = Path("train/ckpt_folders/ckpt_10k4/latest.pt")
+# CKPT = Path("train/ckpt_folders/ckpt_10k3/latest.pt")
+# CKPT = Path("train/ckpt_folders/ckpt_10k/latest.pt")
 ckpt = torch.load(CKPT, map_location="cpu", weights_only=True)
+# print(ckpt["model"].keys())
+layers = [k for k in ckpt["model"].keys() if "tr.layers." in k]
+n_layers = max(int(k.split(".")[2]) for k in layers) + 1
+print(f"pytorch model has {n_layers} layers.")
 tok2id = ckpt["vocab"]
 id2tok = {i: t for t, i in tok2id.items()}
 SEQ_LEN = ckpt["model"]["pos"].shape[0] + 1
 D_MODEL = ckpt["model"]["pos"].shape[1]
 
-import torch.nn as nn
 class GPT(nn.Module):
     def __init__(self, vocab, seq_len, d_model, n_head=4, n_layer=2):
         super().__init__()
@@ -44,10 +50,11 @@ class GPT(nn.Module):
         return self.fc(self.tr(self.emb(x) + self.pos[:x.size(1)]))
 
 model = GPT(len(tok2id), SEQ_LEN, D_MODEL)
+# model = GPT(len(tok2id), SEQ_LEN, D_MODEL, n_head=8, n_layer=6)
+# model = GPT(len(tok2id), SEQ_LEN, D_MODEL, n_head=8, n_layer=4)
 model.load_state_dict(ckpt["model"])
 model.eval()
 
-# === Helpers ===
 def encode(tokens): return torch.tensor([tok2id[t] for t in tokens])
 def decode(ids): return [id2tok[int(i)] for i in ids]
 def closest_bpm_token(val):
@@ -84,36 +91,44 @@ def sample(prompt, max_len=512, temperature=1.0, top_k=50, device="cpu"):
             break
     return decode(ids.squeeze())
 
-# === API endpoint ===
 @app.post("/generate")
 def generate_music(prompt: str = Form(...)):
-    print(f"\n🎤 Prompt received: {prompt}")
+    print(f"\nPrompt received: {prompt}")
 
+    # if 'happy' in prompt:
+    #     midi_path = "generate_music/0117612a80915d28b98a8454d5ab0411.mid"
+    # elif 'sad' in prompt:
+    #     midi_path = "generate_music/0e3872008afc692b86ddf51061592a27.mid"
+    # elif 'scare' in prompt:
+    #     midi_path = "generate_music/0a5ac59190f0fefa7496df55062b4e8f.mid"
+    # elif 'relax' in prompt:
+    #     midi_path = "generate_music/0bc5ddea54f25e8cec44968fb1373a02.mid"
+    # else: 
     allpredictions = inference.predict(prompt)
     mapping = EATS.get_music_params(allpredictions)
 
-    print("🎼 Music Mapping:", mapping)
+    print("Music Mapping:", mapping)
 
     bpm_tok = closest_bpm_token(mapping["bpm"])
     key = normalize_key_signature(mapping["key"])
     instruments = []
     for fam in mapping["all_families"]:
         instruments.extend(FAMILY_TO_INSTRUMENTS.get(fam, []))
-    print("🎹 Instruments:", instruments)
-    print("🎵 Key:", key)
-    print("⚡ BPM Token:", bpm_tok)
+    print("Instruments:", instruments)
+    print("Key:", key)
+    print("BPM Token:", bpm_tok)
 
     gen_prompt = ["[START_SEQUENCE]", bpm_tok, key] + [f"[INSTRUMENT] {i}" for i in instruments]
     tokens = sample(gen_prompt, max_len=SEQ_LEN)
 
-    print("🎶 Generated token snippet:", tokens[:40], "...\n")
+    print("Generated token snippet:", tokens, "...\n")
 
     pm, current_inst = pretty_midi.PrettyMIDI(), None
     for tok in tokens:
         if tok.startswith("[INSTRUMENT]"):
             name = tok.split("]", 1)[1].strip()
             prog = pretty_midi.instrument_name_to_program(name) \
-                   if name in pretty_midi.INSTRUMENT_MAP else 0
+                if name in pretty_midi.INSTRUMENT_MAP else 0
             current_inst = pretty_midi.Instrument(program=prog, name=name)
             pm.instruments.append(current_inst)
         elif (m := note_re.match(tok)) and current_inst:
@@ -153,4 +168,5 @@ def generate_music(prompt: str = Form(...)):
             filename="generated.wav",
         )
     finally:
+        # pass
         os.remove(midi_path)
