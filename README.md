@@ -36,7 +36,6 @@ brew install fluid-synth
 ```
 
 ### Windows
-
 ```bash
 Download from: https://github.com/FluidSynth/fluidsynth/releases
 Extract and add the folder with fluidsynth.exe to your system PATH
