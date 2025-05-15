@@ -1,0 +1,9 @@
+fastapi==0.110.1
+uvicorn==0.29.0
+torch==2.2.2
+pretty_midi==0.2.10
+midi2audio==0.1.1
+transformers==4.40.0
+peft==0.10.0
+nltk==3.8.1
+python-multipart==0.0.9
