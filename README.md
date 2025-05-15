@@ -14,16 +14,10 @@ This project consists of a frontend and a backend for generating music based on 
 
 ### Backend
 
-1. **Create a Conda Environment**:
-   ```bash
-   conda create --name music python=3.8
-   conda activate music
-   ```
-
-2. **Install Python Dependencies**:
+1. **Install Python Dependencies**:
    Run:
    ```bash
-   pip install fastapi==0.110.1 uvicorn==0.29.0 torch==2.2.2 pretty_midi==0.2.10 midi2audio==0.1.1 python-dotenv aiofiles==23.2.1 pydantic==2.7.1 numpy scipy types-python-dateutil typing-extensions
+   pip install requirements.txt
    ```
 
 3. **Run the Backend**:
@@ -31,7 +25,20 @@ This project consists of a frontend and a backend for generating music based on 
    ```bash
    uvicorn api_cache:app --reload
    ```
-   This will start the FastAPI server on `http://127.0.0.1:8000`.
+
+## Install FluidSynth
+
+This project uses `fluidsynth` to convert MIDI files to audio. Install it using:
+
+### macOS
+```bash
+brew install fluid-synth
+
+### Windows
+
+Download from: https://github.com/FluidSynth/fluidsynth/releases
+Extract and add the folder with fluidsynth.exe to your system PATH
+Restart your terminal or IDE
 
 ### Frontend
 
@@ -61,6 +68,4 @@ This project consists of a frontend and a backend for generating music based on 
 ## Notes
 
 - Ensure that both the frontend and backend are running simultaneously for the application to function correctly.
-- If you encounter any issues, check the console output for error messages and ensure all dependencies are installed correctly.
-
 ---
