@@ -33,12 +33,15 @@ This project uses `fluidsynth` to convert MIDI files to audio. Install it using:
 ### macOS
 ```bash
 brew install fluid-synth
+```
 
 ### Windows
 
+```bash
 Download from: https://github.com/FluidSynth/fluidsynth/releases
 Extract and add the folder with fluidsynth.exe to your system PATH
 Restart your terminal or IDE
+```
 
 ### Frontend
 
