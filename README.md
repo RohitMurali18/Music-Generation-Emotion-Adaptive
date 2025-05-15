@@ -20,13 +20,7 @@ This project consists of a frontend and a backend for generating music based on 
    pip install requirements.txt
    ```
 
-3. **Run the Backend**:
-   Ensure you are in the project root directory and run:
-   ```bash
-   uvicorn api_cache:app --reload
-   ```
-
-## Install FluidSynth
+2. Install FluidSynth
 
 This project uses `fluidsynth` to convert MIDI files to audio. Install it using:
 
@@ -41,6 +35,12 @@ Download from: https://github.com/FluidSynth/fluidsynth/releases
 Extract and add the folder with fluidsynth.exe to your system PATH
 Restart your terminal or IDE
 ```
+
+3. **Run the Backend**:
+   Ensure you are in the project root directory and run:
+   ```bash
+   uvicorn api_cache:app --reload
+   ```
 
 ### Frontend
 
