@@ -23,7 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CKPT = Path("generate_music/demo_checkpoint.pt")
+CKPT = Path("generate_music/music_generator.pt")
 # CKPT = Path("train/ckpt_folders/ckpt_10k4/latest.pt")
 # CKPT = Path("train/ckpt_folders/ckpt_10k3/latest.pt")
 # CKPT = Path("train/ckpt_folders/ckpt_10k/latest.pt")
