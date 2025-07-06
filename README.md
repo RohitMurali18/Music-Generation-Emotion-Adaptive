@@ -4,6 +4,8 @@
 
 This project consists of a frontend and a backend for generating music based on emotional input. The backend is powered by FastAPI, and the frontend is built with React.
 
+![MusicGen](https://github.com/user-attachments/assets/fe53568e-e3f4-4815-946f-4dcec7c085d0)
+
 ## Prerequisites
 
 - **Node.js** and **npm**: Required to run the frontend.
